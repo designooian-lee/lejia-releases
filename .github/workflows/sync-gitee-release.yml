@@ -3,6 +3,12 @@ name: Sync APK release to Gitee
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing GitHub Release tag to sync
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -14,7 +20,7 @@ jobs:
       GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
       GITEE_OWNER: ${{ vars.GITEE_OWNER }}
       GITEE_REPO: ${{ vars.GITEE_REPO }}
-      TAG: ${{ github.event.release.tag_name }}
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
       - name: Validate Gitee configuration
         run: |
@@ -26,6 +32,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > "$RUNNER_TEMP/github-release.json"
           mkdir -p release-assets
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.apk' --dir release-assets
           test -n "$(find release-assets -maxdepth 1 -type f -name '*.apk' -print -quit)"
@@ -34,6 +41,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          github_release="$RUNNER_TEMP/github-release.json"
           api="https://gitee.com/api/v5/repos/$GITEE_OWNER/$GITEE_REPO"
           auth=(-H "Authorization: Bearer $GITEE_TOKEN" -H "Accept: application/json")
           release_json="$(mktemp)"
@@ -42,8 +50,8 @@ jobs:
           if [ "$status" = '200' ]; then
             release_id="$(jq -r '.id' "$release_json")"
           elif [ "$status" = '404' ]; then
-            name="$(jq -r '.release.name // .release.tag_name' "$GITHUB_EVENT_PATH")"
-            body="$(jq -r '.release.body // ""' "$GITHUB_EVENT_PATH")"
+            name="$(jq -r '.name // .tag_name' "$github_release")"
+            body="$(jq -r '.body // ""' "$github_release")"
             curl -sSf -X POST "${auth[@]}" \
               --data-urlencode "tag_name=$TAG" \
               --data-urlencode "name=$name" \
@@ -58,15 +66,11 @@ jobs:
 
           assets_json="$(mktemp)"
           curl -sSf "${auth[@]}" "$api/releases/$release_id/attach_files" > "$assets_json"
-
-          {
-            echo "Release $TAG 同步完成"
-            echo
-          } | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "Release $TAG 同步完成" | tee -a "$GITHUB_STEP_SUMMARY"
 
           for apk in release-assets/*.apk; do
             name="$(basename "$apk")"
-            github_url="$(jq -r --arg name "$name" '.release.assets[] | select(.name == $name) | .browser_download_url' "$GITHUB_EVENT_PATH")"
+            github_url="$(jq -r --arg name "$name" '.assets[] | select(.name == $name) | .browser_download_url' "$github_release")"
             gitee_url="$(jq -r --arg name "$name" '.[] | select(.name == $name) | .browser_download_url' "$assets_json")"
 
             if [ -z "$gitee_url" ]; then
@@ -77,8 +81,8 @@ jobs:
             fi
 
             {
+              echo
               echo "GitHub APK：$github_url"
               echo "Gitee APK：$gitee_url"
-              echo
             } | tee -a "$GITHUB_STEP_SUMMARY"
           done
