@@ -46,10 +46,9 @@ jobs:
           auth=(-H "Authorization: Bearer $GITEE_TOKEN" -H "Accept: application/json")
           release_json="$(mktemp)"
           status="$(curl -sS -o "$release_json" -w '%{http_code}' "${auth[@]}" "$api/releases/tags/$TAG")"
+          release_id="$(jq -r '.id // empty' "$release_json")"
 
-          if [ "$status" = '200' ]; then
-            release_id="$(jq -r '.id' "$release_json")"
-          elif [ "$status" = '404' ]; then
+          if [ "$status" != '200' ] || [ -z "$release_id" ]; then
             name="$(jq -r '.name // .tag_name' "$github_release")"
             body="$(jq -r '.body // ""' "$github_release")"
             curl -sSf -X POST "${auth[@]}" \
@@ -58,10 +57,8 @@ jobs:
               --data-urlencode "body=$body" \
               --data-urlencode 'target_commitish=main' \
               "$api/releases" > "$release_json"
-            release_id="$(jq -r '.id' "$release_json")"
-          else
-            cat "$release_json"
-            exit 1
+            release_id="$(jq -r '.id // empty' "$release_json")"
+            test -n "$release_id"
           fi
 
           assets_json="$(mktemp)"
