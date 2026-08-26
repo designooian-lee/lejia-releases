@@ -43,15 +43,15 @@ jobs:
 
           github_release="$RUNNER_TEMP/github-release.json"
           api="https://gitee.com/api/v5/repos/$GITEE_OWNER/$GITEE_REPO"
-          auth=(-H "Authorization: Bearer $GITEE_TOKEN" -H "Accept: application/json")
           release_json="$(mktemp)"
-          status="$(curl --connect-timeout 15 --max-time 120 -sS -o "$release_json" -w '%{http_code}' "${auth[@]}" "$api/releases/tags/$TAG")"
+          status="$(curl --connect-timeout 15 --max-time 120 -sS -o "$release_json" -w '%{http_code}' "$api/releases/tags/$TAG")"
           release_id="$(jq -r '.id // empty' "$release_json")"
 
           if [ "$status" != '200' ] || [ -z "$release_id" ]; then
             name="$(jq -r '.name // .tag_name' "$github_release")"
             body="$(jq -r '.body // ""' "$github_release")"
-            curl --connect-timeout 15 --max-time 300 -sSf -X POST "${auth[@]}" \
+            curl --connect-timeout 15 --max-time 300 -sSf -X POST \
+              --data-urlencode "access_token=$GITEE_TOKEN" \
               --data-urlencode "tag_name=$TAG" \
               --data-urlencode "name=$name" \
               --data-urlencode "body=$body" \
@@ -62,7 +62,7 @@ jobs:
           fi
 
           assets_json="$(mktemp)"
-          curl --connect-timeout 15 --max-time 300 -sSf "${auth[@]}" "$api/releases/$release_id/attach_files" > "$assets_json"
+          curl --connect-timeout 15 --max-time 300 -sSf "$api/releases/$release_id/attach_files" > "$assets_json"
           echo "Release $TAG 同步完成" | tee -a "$GITHUB_STEP_SUMMARY"
 
           for apk in release-assets/*.apk; do
@@ -72,7 +72,7 @@ jobs:
 
             if [ -z "$gitee_url" ]; then
               response="$(mktemp)"
-              curl --connect-timeout 15 --max-time 300 -sSf -X POST "${auth[@]}" -F "file=@$apk" \
+              curl --connect-timeout 15 --max-time 300 -sSf -X POST -F "access_token=$GITEE_TOKEN" -F "file=@$apk" \
                 "$api/releases/$release_id/attach_files" > "$response"
               gitee_url="$(jq -r '.browser_download_url' "$response")"
             fi
