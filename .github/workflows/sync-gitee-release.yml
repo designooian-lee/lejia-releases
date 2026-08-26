@@ -1,0 +1,84 @@
+name: Sync APK release to Gitee
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  sync-apks:
+    runs-on: ubuntu-latest
+    env:
+      GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+      GITEE_OWNER: ${{ vars.GITEE_OWNER }}
+      GITEE_REPO: ${{ vars.GITEE_REPO }}
+      TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - name: Validate Gitee configuration
+        run: |
+          test -n "$GITEE_TOKEN"
+          test -n "$GITEE_OWNER"
+          test -n "$GITEE_REPO"
+
+      - name: Download GitHub APK assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release-assets
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.apk' --dir release-assets
+          test -n "$(find release-assets -maxdepth 1 -type f -name '*.apk' -print -quit)"
+
+      - name: Create or update Gitee release
+        run: |
+          set -euo pipefail
+
+          api="https://gitee.com/api/v5/repos/$GITEE_OWNER/$GITEE_REPO"
+          auth=(-H "Authorization: Bearer $GITEE_TOKEN" -H "Accept: application/json")
+          release_json="$(mktemp)"
+          status="$(curl -sS -o "$release_json" -w '%{http_code}' "${auth[@]}" "$api/releases/tags/$TAG")"
+
+          if [ "$status" = '200' ]; then
+            release_id="$(jq -r '.id' "$release_json")"
+          elif [ "$status" = '404' ]; then
+            name="$(jq -r '.release.name // .release.tag_name' "$GITHUB_EVENT_PATH")"
+            body="$(jq -r '.release.body // ""' "$GITHUB_EVENT_PATH")"
+            curl -sSf -X POST "${auth[@]}" \
+              --data-urlencode "tag_name=$TAG" \
+              --data-urlencode "name=$name" \
+              --data-urlencode "body=$body" \
+              --data-urlencode 'target_commitish=main' \
+              "$api/releases" > "$release_json"
+            release_id="$(jq -r '.id' "$release_json")"
+          else
+            cat "$release_json"
+            exit 1
+          fi
+
+          assets_json="$(mktemp)"
+          curl -sSf "${auth[@]}" "$api/releases/$release_id/attach_files" > "$assets_json"
+
+          {
+            echo "Release $TAG 同步完成"
+            echo
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+          for apk in release-assets/*.apk; do
+            name="$(basename "$apk")"
+            github_url="$(jq -r --arg name "$name" '.release.assets[] | select(.name == $name) | .browser_download_url' "$GITHUB_EVENT_PATH")"
+            gitee_url="$(jq -r --arg name "$name" '.[] | select(.name == $name) | .browser_download_url' "$assets_json")"
+
+            if [ -z "$gitee_url" ]; then
+              response="$(mktemp)"
+              curl -sSf -X POST "${auth[@]}" -F "file=@$apk" \
+                "$api/releases/$release_id/attach_files" > "$response"
+              gitee_url="$(jq -r '.browser_download_url' "$response")"
+            fi
+
+            {
+              echo "GitHub APK：$github_url"
+              echo "Gitee APK：$gitee_url"
+              echo
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+          done
